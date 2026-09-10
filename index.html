@@ -281,6 +281,32 @@ footer{text-align:center;color:var(--muted);font-size:11.5px;margin-top:40px;}
   <div id="kpiProjNote" style="display: block; font-size: 11.5px; color: var(--muted); margin-top: 10px; padding: 8px 12px; background: var(--orange-light); border-radius: 8px;">Прогноз на весь месяц = текущее значение ÷ 6 дн. × 30 дн. (дней в месяце). Для показов/корзин/заказов — оценка на конец месяца при сохранении текущего темпа. CTR, конверсия и скидка не проецируются — это доли, они не растут вместе с днями.</div>
 
   <!-- Trends -->
+  <!-- Pinned Топ-10 -->
+  <div class="section-title"><span>Топ-10</span><div class="line"></div></div>
+  <div class="note" style="margin-bottom:12px;">Закреплённый список — статистика по этим 10 артикулам за выбранный месяц, всегда наверху</div>
+  <div class="table-card" style="margin-bottom:24px;">
+    <div class="table-scroll">
+      <table id="top10Table">
+        <thead>
+          <tr>
+            <th>Артикул продавца</th>
+            <th>Название</th>
+            <th class="num">Показы</th>
+            <th class="num">CTR</th>
+            <th class="num">Корзины</th>
+            <th class="num">Корзина→заказ</th>
+            <th class="num">Заказы</th>
+            <th class="num">Δ заказов, %</th>
+            <th class="num">из них РК</th>
+            <th class="num">% скидки МП</th>
+            <th class="num">Ср. выкуп</th>
+          </tr>
+        </thead>
+        <tbody id="top10Tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="section-title"><span>Динамика по месяцам</span><div class="line"></div></div>
   <div class="charts-row">
     <div class="chart-card">
@@ -2287,11 +2313,69 @@ function render(){
   renderTabs();
   renderKPI();
   renderCharts();
+  renderTop10();
   renderTable();
   renderPack();
   renderStock();
 }
 function init(){ render(); }
+
+const TOP10_ARTICLES = ['7101092301','7101092201','7102023401','7001092251','7002022451','7007102151','7003012351','7111012501','7011012151','7112022101'];
+
+function renderTop10(){
+  const tbody = document.getElementById('top10Tbody');
+  if(!tbody) return;
+  const d = DATA[currentMonth];
+  const months = monthsAvailable();
+  const idx = months.indexOf(currentMonth);
+  const prevMap = idx>0 ? getSkuMap(months[idx-1]) : null;
+  const proj = getProjection(d);
+
+  function deltaSpanLocal(cur, key, s, isPct){
+    if(!prevMap) return '';
+    const p = prevMap[s.artikul_prodavca||s.artikul];
+    if(!p) return '';
+    const pv = p[key];
+    if(pv===null||pv===undefined||cur===null||cur===undefined) return '';
+    const curForCompare = proj ? cur * proj.factor : cur;
+    const diff = isPct ? (curForCompare-pv)*100 : curForCompare-pv;
+    if(Math.abs(diff) < (isPct?0.05:1)) return '<span class="cell-delta" style="color:var(--muted)">·</span>';
+    const color = diff>0?'var(--green)':'var(--red)';
+    const sign = diff>0?'+':'';
+    return `<span class="cell-delta" style="color:${color}">${sign}${isPct?diff.toFixed(1)+'п.п.':fmtInt(diff)}</span>`;
+  }
+  function orderChangePctLocal(s){
+    if(!prevMap) return null;
+    const p = prevMap[s.artikul_prodavca||s.artikul];
+    if(!p || !p.orders) return null;
+    const cur = proj && s.orders!==null ? s.orders*proj.factor : s.orders;
+    if(cur===null||cur===undefined) return null;
+    return ((cur - p.orders)/p.orders)*100;
+  }
+
+  const rowsHtml = TOP10_ARTICLES.map(art=>{
+    const s = d.skus.find(x=>String(x.artikul_prodavca)===art);
+    if(!s){
+      return `<tr><td class="mono">${art}</td><td colspan="9" style="color:var(--muted);">нет данных за этот месяц</td></tr>`;
+    }
+    const pct = orderChangePctLocal(s);
+    const pctHtml = pct===null||pct===undefined ? '—' : `<span style="color:${pct<0?'var(--red)':'var(--green)'};font-weight:700;">${pct>0?'+':''}${pct.toFixed(1)}%</span>`;
+    return `<tr>
+      <td class="mono">${s.artikul_prodavca}</td>
+      <td style="white-space:normal;max-width:260px;font-size:12px;">${s.name||'—'}</td>
+      <td class="num">${fmtInt(s.shows)}${deltaSpanLocal(s.shows,'shows',s,false)}</td>
+      <td class="num">${fmtPct(s.ctr)}</td>
+      <td class="num">${fmtInt(s.baskets)}${deltaSpanLocal(s.baskets,'baskets',s,false)}</td>
+      <td class="num">${fmtPct(s.conv_basket_order)}</td>
+      <td class="num"><b>${fmtInt(s.orders)}</b>${deltaSpanLocal(s.orders,'orders',s,false)}</td>
+      <td class="num">${pctHtml}</td>
+      <td class="num">${fmtInt(s.orders_ads)}</td>
+      <td class="num">${fmtPct(s.discount_pct)}</td>
+      <td class="num">${fmtPct(s.buyout_rate)}</td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = rowsHtml;
+}
 
 // ================= PACK SIZE (2pcs vs 4pcs, full L.LOCKER mudflap assortment) =================
 const ORIGINAL_PACK_DATA = JSON.parse(document.getElementById('embedded-pack-data').textContent);
@@ -2889,6 +2973,7 @@ function downloadCurrentVersion(){
 
 init();
 </script>
+
 
 
 
