@@ -2050,6 +2050,19 @@ function getProjection(d, year){
   return { daysElapsed, totalDays, factor: totalDays / daysElapsed };
 }
 
+// Expected value "so far" for the previous (closed) month, scaled DOWN to the same
+// number of elapsed days as the current open month — e.g. prev month sold 50 over 31
+// days (daily rate 1.6); 6 days into this month, expected = 1.6*6 = 9.6. This is
+// compared against the CURRENT month's raw actual (not projected up), matching how
+// far along the current month should be if it kept last month's pace.
+function expectedFromPrevRate(prevMonthData, daysElapsed){
+  if(!prevMonthData || !prevMonthData.period) return null;
+  const end = prevMonthData.period.split('-')[1];
+  const daysInPrev = parseInt(end.split('.')[0], 10);
+  if(!daysInPrev) return null;
+  return daysElapsed / daysInPrev; // multiply this by the previous month's value
+}
+
 function renderKPI(){
   const d = DATA[currentMonth];
   const months = monthsAvailable();
@@ -2189,6 +2202,7 @@ function renderTable(){
   const d = DATA[currentMonth];
   const months = monthsAvailable();
   const idx = months.indexOf(currentMonth);
+  const prevMonthData = idx>0 ? DATA[months[idx-1]] : null;
   const prevMap = (deltaMode==='prev' && idx>0) ? getSkuMap(months[idx-1]) : null;
 
   const q = document.getElementById('searchBox').value.trim().toLowerCase();
@@ -2196,25 +2210,37 @@ function renderTable(){
   const trendF = trendFilterValue;
 
   const proj = getProjection(d);
+  // scale the PREVIOUS (closed) month's value down to "where it would have been" at the
+  // same elapsed day count as this open month, then compare the current month's raw
+  // actual against that — e.g. prev month sold 50 over 31 days (1.6/day); 6 days into
+  // this month expected = 1.6*6 = 9.6, compare actual 3 against that (not vs the full 50).
+  const revFactor = proj ? expectedFromPrevRate(prevMonthData, proj.daysElapsed) : null;
 
+  function expectedValue(pv){
+    if(pv===null||pv===undefined) return null;
+    return revFactor!==null ? pv * revFactor : pv;
+  }
   function ordersForCompare(s){
-    if(s.orders===null || s.orders===undefined) return null;
-    return proj ? s.orders * proj.factor : s.orders;
+    // current month's actual is compared as-is now — it's the baseline (prev) that gets scaled
+    return (s.orders===null||s.orders===undefined) ? null : s.orders;
   }
   function orderChangePct(s){
     if(!prevMap) return null;
     const p = prevMap[s.artikul_prodavca||s.artikul];
-    if(!p || p.orders===null || p.orders===undefined || !p.orders) return null; // avoid divide-by-zero
+    if(!p || p.orders===null || p.orders===undefined || !p.orders) return null;
     const cur = ordersForCompare(s);
     if(cur===null) return null;
-    return ((cur - p.orders) / p.orders) * 100;
+    const expected = expectedValue(p.orders);
+    if(!expected) return null; // avoid divide-by-zero
+    return ((cur - expected) / expected) * 100;
   }
   function trendOf(s){
     if(!prevMap) return null;
     const p = prevMap[s.artikul_prodavca||s.artikul];
     if(!p || p.orders===null || p.orders===undefined || s.orders===null || s.orders===undefined) return null;
-    const curForCompare = ordersForCompare(s);
-    const diff = curForCompare - p.orders;
+    const cur = ordersForCompare(s);
+    const expected = expectedValue(p.orders);
+    const diff = cur - expected;
     if(Math.abs(diff) < 1) return 'flat';
     return diff>0 ? 'up' : 'down';
   }
@@ -2263,7 +2289,7 @@ function renderTable(){
   if(skuNote){
     if(proj && prevMap){
       skuNote.style.display='block';
-      skuNote.textContent = `Все показатели (показы, CTR, корзины, конверсия корзина→заказ, заказы, заказы РК, % скидки МП, ср. выкуп) сравниваются с прогнозом на весь месяц (значение ÷ ${proj.daysElapsed} × ${proj.totalDays}), а не с фактом на сегодня — иначе разница всегда будет в минус просто из-за того, что месяц ещё не закончился. Кнопки "растут/падают" считаются по прогнозу заказов. Столбец "Δ заказов, %" — относительное изменение, по нему удобнее находить сильнее всего падающие артикулы, чем по абсолютному числу.`;
+      skuNote.textContent = `Сравниваем факт этого месяца (на ${proj.daysElapsed}-й день) не со всем прошлым месяцем, а с тем, сколько прошлый месяц "успел бы" за столько же дней при своём темпе (значение прошлого месяца ÷ дней в нём × ${proj.daysElapsed}). Так разница не раздувается просто из-за того, что месяц ещё не закончился. Кнопки "растут/падают" и столбец "Δ заказов, %" считаются по этой же логике для заказов.`;
     } else {
       skuNote.style.display='none';
     }
@@ -2275,14 +2301,15 @@ function renderTable(){
     if(!p) return '';
     const pv = p[key];
     if(pv===null||pv===undefined||cur===null||cur===undefined) return '';
-    // projection formula applied uniformly to every metric, including rates, per explicit request
-    const curForCompare = proj ? cur * proj.factor : cur;
-    const diff = isPct ? (curForCompare-pv)*100 : curForCompare-pv;
+    // compare current month's raw actual against the previous month scaled down to the
+    // same elapsed-day count (see expectedValue) — not the other way around
+    const expected = expectedValue(pv);
+    const diff = isPct ? (cur-expected)*100 : cur-expected;
     if(Math.abs(diff) < (isPct?0.05:1)) return '<span class="cell-delta" style="color:var(--muted)">·</span>';
     const cls = diff>0?'up':'down';
     const color = diff>0?'var(--green)':'var(--red)';
     const sign = diff>0?'+':'';
-    return `<span class="cell-delta" style="color:${color}" title="${proj ? 'к прогнозу на весь месяц' : 'к пред. месяцу'}">${sign}${isPct?diff.toFixed(1)+'п.п.':fmtInt(diff)}</span>`;
+    return `<span class="cell-delta" style="color:${color}" title="${proj ? 'к темпу пред. месяца за столько же дней' : 'к пред. месяцу'}">${sign}${isPct?diff.toFixed(1)+'п.п.':fmtInt(diff)}</span>`;
   }
 
   document.getElementById('skuTbody').innerHTML = rows.map(s=>`
@@ -2328,8 +2355,14 @@ function renderTop10(){
   const d = DATA[currentMonth];
   const months = monthsAvailable();
   const idx = months.indexOf(currentMonth);
+  const prevMonthData = idx>0 ? DATA[months[idx-1]] : null;
   const prevMap = idx>0 ? getSkuMap(months[idx-1]) : null;
   const proj = getProjection(d);
+  const revFactor = proj ? expectedFromPrevRate(prevMonthData, proj.daysElapsed) : null;
+  function expectedValueLocal(pv){
+    if(pv===null||pv===undefined) return null;
+    return revFactor!==null ? pv * revFactor : pv;
+  }
 
   function deltaSpanLocal(cur, key, s, isPct){
     if(!prevMap) return '';
@@ -2337,8 +2370,8 @@ function renderTop10(){
     if(!p) return '';
     const pv = p[key];
     if(pv===null||pv===undefined||cur===null||cur===undefined) return '';
-    const curForCompare = proj ? cur * proj.factor : cur;
-    const diff = isPct ? (curForCompare-pv)*100 : curForCompare-pv;
+    const expected = expectedValueLocal(pv);
+    const diff = isPct ? (cur-expected)*100 : cur-expected;
     if(Math.abs(diff) < (isPct?0.05:1)) return '<span class="cell-delta" style="color:var(--muted)">·</span>';
     const color = diff>0?'var(--green)':'var(--red)';
     const sign = diff>0?'+':'';
@@ -2348,9 +2381,11 @@ function renderTop10(){
     if(!prevMap) return null;
     const p = prevMap[s.artikul_prodavca||s.artikul];
     if(!p || !p.orders) return null;
-    const cur = proj && s.orders!==null ? s.orders*proj.factor : s.orders;
+    const cur = s.orders;
     if(cur===null||cur===undefined) return null;
-    return ((cur - p.orders)/p.orders)*100;
+    const expected = expectedValueLocal(p.orders);
+    if(!expected) return null;
+    return ((cur - expected)/expected)*100;
   }
 
   const rowsHtml = TOP10_ARTICLES.map(art=>{
